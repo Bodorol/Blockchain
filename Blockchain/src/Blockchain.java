@@ -1,39 +1,73 @@
 import java.security.MessageDigest;
 import java.util.*;
-
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 
 class Blockchain {
-    private List<Block> blocks = new ArrayList<>();
+    private volatile static Blockchain blockchain = new Blockchain();
+    private volatile List<Block> blocks = new ArrayList<>();
+    private volatile Set<Long> ids = new HashSet<>();
+    private volatile int numZeros = 0;
 
-    public void createBlock(int zeros) {
-        if (blocks.size() == 0) {
-            blocks.add(new Block(zeros));
-        } else {
-            Block lastBlock = blocks.get(blocks.size() - 1);
-            blocks.add(new Block(lastBlock.getId() + 1, lastBlock.getHash(), zeros));
+    private Blockchain() {}
+
+    public static Blockchain getBlockchain() {
+        return blockchain;
+    }
+
+    public void addBlock(Block block) {
+        if (!ids.contains(block.getId())) {
+            blocks.add(block);
+            ids.add(block.getId());
+            adjustNumZeros(blocks.get(blocks.size() - 1));
         }
     }
 
-    public void createMultipleBlocks(int amount, int zeros) {
-        for (int i = 0; i < amount; i++) {
-            createBlock(zeros);
+    public long getCurrentId() {
+        return blocks.get(blocks.size() - 1).getId();
+    }
+
+    public String getLastHash() {
+        return blocks.get(blocks.size() - 1).getHash();
+    }
+
+    public int getBlockchainSize() {
+        return blocks.size();
+    }
+
+    public int getNumZeros() {
+        return numZeros;
+    }
+
+    public void adjustNumZeros(Block block) {
+        long time = block.getTimeGenerating();
+        if (time <= 10) {
+            numZeros++;
+            block.setChangeInZeros(numZeros);
+        } else if (time >= 60) {
+            numZeros--;
+            block.setChangeInZeros(-numZeros);
+        } else {
+            block.setChangeInZeros(0);
         }
     }
 
     public void print() {
-        blocks.forEach(block -> System.out.println(block + "Block was generating for " + block.getTimeGenerating() + " seconds\n"));
+        blocks.forEach(block -> System.out.println(block + "Block was generating for " + block.getTimeGenerating() + " seconds\n"
+        + block.getChange() + "\n"));
     }
 
-    public static void main(String[] args) {
-        Scanner input = new Scanner(System.in);
-        Blockchain chain = new Blockchain();
-        int zeros = -1;
-        do {
-            System.out.println("Enter how many zeros the hash must start with: ");
-            zeros = input.nextInt();
-        } while (zeros < 0 || zeros > 64);
-        chain.createMultipleBlocks(6, zeros);
+    public static void main(String[] args) throws InterruptedException {
+        Blockchain chain = Blockchain.getBlockchain();
+        ExecutorService executor = Executors.newFixedThreadPool(10);
+        for (int i = 0; i < 10; i++) {
+            executor.submit(new Miner(chain));
+        }
+        Thread.sleep(6000);
+        executor.shutdownNow();
+        executor.awaitTermination(5000, TimeUnit.MILLISECONDS);
         chain.print();
     }
 }
@@ -46,12 +80,14 @@ class Block {
     private String previousHash;
     private String hash;
     private long timeGenerating;
+    private long minerId;
+    private int changeInZeros;
 
-    public Block(int zeros) {
-        this(1, "0", zeros);
+    public Block(long minerId, int zeros) {
+        this(1, "0", minerId, zeros);
     }
 
-    public Block(long id, String previousHash, int zeros) {
+    public Block(long id, String previousHash, long minerId, int zeros) {
         Random random = new Random();
         this.id = id;
         this.previousHash = previousHash;
@@ -61,6 +97,7 @@ class Block {
             hash = StringUtil.applySha256(toString());
         }
         timeGenerating = (new Date().getTime() - timestamp)/1000;
+        this.minerId = minerId;
     }
 
     public boolean checkIfValid(int zeros) {
@@ -83,17 +120,54 @@ class Block {
         return timeGenerating;
     }
 
+    public String getChange() {
+        return changeInZeros == 0 ? "N stays the same" :
+                changeInZeros < 0 ? "N was decreased to " + -changeInZeros : "N was increased to " + changeInZeros + "\n";
+    }
+
+    public void setChangeInZeros(int changeInZeros) {
+        this.changeInZeros = changeInZeros;
+    }
+
     public String toString() {
         return String.format("Block:\n" +
+                "Created by miner #" + this.minerId + "\n" +
                 "Id: %d\n" +
                 "Timestamp: %d\n" +
                 "Magic number: %d\n" +
                 "Hash of the previous block:\n" +
                 "%s\n" +
                 "Hash of the block:\n" +
-                "%s\n", id, timestamp, magicNumber, previousHash, hash);
+                "%s\n",
+                id, timestamp, magicNumber, previousHash, hash);
     }
 
+}
+
+class Miner implements Runnable {
+    private static long numInstances = 0;
+    private long id;
+    private Blockchain blockchain;
+
+    public Miner(Blockchain blockchain) {
+        id = ++numInstances;
+        this.blockchain = blockchain;
+    }
+
+    public long getId() {
+        return id;
+    }
+
+    @Override
+    public void run() {
+        while (blockchain.getBlockchainSize() < 5) {
+            if (blockchain.getBlockchainSize() == 0) {
+                blockchain.addBlock(new Block(id, blockchain.getNumZeros()));
+            } else {
+                blockchain.addBlock(new Block(blockchain.getCurrentId() + 1, blockchain.getLastHash(), id, blockchain.getNumZeros()));
+            }
+        }
+    }
 }
 
 
