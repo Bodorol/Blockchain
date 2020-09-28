@@ -2,6 +2,7 @@ import java.security.MessageDigest;
 import java.util.*;
 
 
+
 class Blockchain {
     private List<Block> blocks = new ArrayList<>();
 
