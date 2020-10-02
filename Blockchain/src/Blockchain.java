@@ -9,6 +9,7 @@ class Blockchain {
     private volatile static Blockchain blockchain = new Blockchain();
     private volatile List<Block> blocks = new ArrayList<>();
     private volatile Set<Long> ids = new HashSet<>();
+    private volatile List<String> messagesToAdd = new ArrayList<>();
     private volatile int numZeros = 0;
 
     private Blockchain() {}
@@ -22,7 +23,16 @@ class Blockchain {
             blocks.add(block);
             ids.add(block.getId());
             adjustNumZeros(blocks.get(blocks.size() - 1));
+            messagesToAdd.removeAll(block.getMessages());
         }
+    }
+
+    public void submitMessage(String message) {
+        messagesToAdd.add(message);
+    }
+
+    public List<String> getMessagesToAdd() {
+        return new ArrayList<>(messagesToAdd);
     }
 
     public long getCurrentId() {
@@ -65,6 +75,16 @@ class Blockchain {
         for (int i = 0; i < 10; i++) {
             executor.submit(new Miner(chain));
         }
+        chain.submitMessage("Tom: Hey, I'm first!");
+        Thread.sleep(10);
+        chain.submitMessage("Tom: Hey, I'm second also!");
+        Thread.sleep(30);
+        chain.submitMessage("Sarah: It's not fair!");
+        chain.submitMessage("Sarah: You always will be first because it is your blockchain!");
+        chain.submitMessage("Sarah: Anyway, thank you for this amazing chat.");
+        Thread.sleep(30);
+        chain.submitMessage("Tom: You're welcome :)");
+        chain.submitMessage("Nick: Hey Tom, nice chat");
         Thread.sleep(6000);
         executor.shutdownNow();
         executor.awaitTermination(5000, TimeUnit.MILLISECONDS);
@@ -79,18 +99,20 @@ class Block {
     private int magicNumber = 0;
     private String previousHash;
     private String hash;
+    private List<String> messages;
     private long timeGenerating;
     private long minerId;
     private int changeInZeros;
 
     public Block(long minerId, int zeros) {
-        this(1, "0", minerId, zeros);
+        this(1, "0", minerId, zeros, Collections.emptyList());
     }
 
-    public Block(long id, String previousHash, long minerId, int zeros) {
+    public Block(long id, String previousHash, long minerId, int zeros, List<String> messages) {
         Random random = new Random();
         this.id = id;
         this.previousHash = previousHash;
+        this.messages = messages;
         hash = StringUtil.applySha256(toString());
         while (!checkIfValid(zeros)) {
             magicNumber = random.nextInt();
@@ -116,6 +138,10 @@ class Block {
         return hash;
     }
 
+    public List<String> getMessages() {
+        return messages;
+    }
+
     public long getTimeGenerating() {
         return timeGenerating;
     }
@@ -138,8 +164,10 @@ class Block {
                 "Hash of the previous block:\n" +
                 "%s\n" +
                 "Hash of the block:\n" +
+                "%s\n" +
+                "Block data:\n" +
                 "%s\n",
-                id, timestamp, magicNumber, previousHash, hash);
+                id, timestamp, magicNumber, previousHash, hash, messages.isEmpty() ? "no messages" : String.join("\n", messages));
     }
 
 }
@@ -154,20 +182,21 @@ class Miner implements Runnable {
         this.blockchain = blockchain;
     }
 
-    public long getId() {
-        return id;
-    }
-
     @Override
     public void run() {
         while (blockchain.getBlockchainSize() < 5) {
             if (blockchain.getBlockchainSize() == 0) {
                 blockchain.addBlock(new Block(id, blockchain.getNumZeros()));
             } else {
-                blockchain.addBlock(new Block(blockchain.getCurrentId() + 1, blockchain.getLastHash(), id, blockchain.getNumZeros()));
+                blockchain.addBlock(new Block(blockchain.getCurrentId() + 1,
+                    blockchain.getLastHash(), id, blockchain.getNumZeros(), blockchain.getMessagesToAdd()));
             }
         }
     }
+}
+
+class Message {
+
 }
 
 
