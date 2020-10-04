@@ -1,15 +1,16 @@
-import java.security.MessageDigest;
+import java.security.*;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 
 class Blockchain {
     private volatile static Blockchain blockchain = new Blockchain();
     private volatile List<Block> blocks = new ArrayList<>();
     private volatile Set<Long> ids = new HashSet<>();
-    private volatile List<String> messagesToAdd = new ArrayList<>();
+    private volatile List<Message> messagesToAdd = new ArrayList<>();
     private volatile int numZeros = 0;
 
     private Blockchain() {}
@@ -23,15 +24,22 @@ class Blockchain {
             blocks.add(block);
             ids.add(block.getId());
             adjustNumZeros(blocks.get(blocks.size() - 1));
+            rewardMiner(block.getMiner());
             messagesToAdd.removeAll(block.getMessages());
         }
     }
 
-    public void submitMessage(String message) {
-        messagesToAdd.add(message);
+    public void rewardMiner(User user) {
+        user.receiveCoins(100);
     }
 
-    public List<String> getMessagesToAdd() {
+    public void submitMessage(Message message) {
+        if (messagesToAdd.isEmpty() || messagesToAdd.get(messagesToAdd.size() - 1).getId() < message.getId()) {
+            messagesToAdd.add(message);
+        }
+    }
+
+    public List<Message> getMessagesToAdd() {
         return new ArrayList<>(messagesToAdd);
     }
 
@@ -71,20 +79,25 @@ class Blockchain {
 
     public static void main(String[] args) throws InterruptedException {
         Blockchain chain = Blockchain.getBlockchain();
+        List<User> miners = new ArrayList<>();
+        User sender = new User("sender", chain);
+        User receiver = new User("receiver", chain);
         ExecutorService executor = Executors.newFixedThreadPool(10);
+        sender.sendCoins(receiver, 50);
         for (int i = 0; i < 10; i++) {
-            executor.submit(new Miner(chain));
+            User miner = new User("miner" + (i + 1), chain);
+            miners.add(miner);
+            executor.submit(miner);
         }
-        chain.submitMessage("Tom: Hey, I'm first!");
-        Thread.sleep(10);
-        chain.submitMessage("Tom: Hey, I'm second also!");
-        Thread.sleep(30);
-        chain.submitMessage("Sarah: It's not fair!");
-        chain.submitMessage("Sarah: You always will be first because it is your blockchain!");
-        chain.submitMessage("Sarah: Anyway, thank you for this amazing chat.");
-        Thread.sleep(30);
-        chain.submitMessage("Tom: You're welcome :)");
-        chain.submitMessage("Nick: Hey Tom, nice chat");
+        miners.get(1).sendCoins(miners.get(0), 20);
+        receiver.sendCoins(sender, 50);
+        miners.get(0).sendCoins(miners.get(1), 20);
+        Thread.sleep(5);
+        miners.get(5).sendCoins(miners.get(3), 10);
+        miners.get(8).sendCoins(miners.get(6), 20);
+        Thread.sleep(5);
+        miners.get(6).sendCoins(miners.get(4), 15);
+        miners.get(3).sendCoins(miners.get(2), 10);
         Thread.sleep(6000);
         executor.shutdownNow();
         executor.awaitTermination(5000, TimeUnit.MILLISECONDS);
@@ -99,19 +112,22 @@ class Block {
     private int magicNumber = 0;
     private String previousHash;
     private String hash;
-    private List<String> messages;
+    private List<Message> messages;
     private long timeGenerating;
+    private User miner;
     private long minerId;
     private int changeInZeros;
 
-    public Block(long minerId, int zeros) {
-        this(1, "0", minerId, zeros, Collections.emptyList());
+    public Block(User miner, int zeros) {
+        this(1, "0", miner, zeros, Collections.emptyList());
     }
 
-    public Block(long id, String previousHash, long minerId, int zeros, List<String> messages) {
+    public Block(long id, String previousHash, User miner, int zeros, List<Message> messages) {
         Random random = new Random();
         this.id = id;
         this.previousHash = previousHash;
+        this.miner = miner;
+        this.minerId = miner.getId();
         this.messages = messages;
         hash = StringUtil.applySha256(toString());
         while (!checkIfValid(zeros)) {
@@ -119,7 +135,7 @@ class Block {
             hash = StringUtil.applySha256(toString());
         }
         timeGenerating = (new Date().getTime() - timestamp)/1000;
-        this.minerId = minerId;
+
     }
 
     public boolean checkIfValid(int zeros) {
@@ -127,7 +143,8 @@ class Block {
         for (int i = 0; i < zeros; i++) {
             zero += "0";
         }
-        return zero.equals(hash.substring(0, zeros));
+        return zero.equals(hash.substring(0, zeros))
+                && messages.stream().allMatch(message -> message.verifySignature(message.getUser()));
     }
 
     public long getId() {
@@ -138,12 +155,16 @@ class Block {
         return hash;
     }
 
-    public List<String> getMessages() {
+    public List<Message> getMessages() {
         return messages;
     }
 
     public long getTimeGenerating() {
         return timeGenerating;
+    }
+
+    public User getMiner() {
+        return miner;
     }
 
     public String getChange() {
@@ -156,8 +177,9 @@ class Block {
     }
 
     public String toString() {
-        return String.format("Block:\n" +
-                "Created by miner #" + this.minerId + "\n" +
+        return String.format("Block:\n" + "" +
+                "Created by: %s\n" +
+                "%s was awarded 100 VC\n" +
                 "Id: %d\n" +
                 "Timestamp: %d\n" +
                 "Magic number: %d\n" +
@@ -167,36 +189,130 @@ class Block {
                 "%s\n" +
                 "Block data:\n" +
                 "%s\n",
-                id, timestamp, magicNumber, previousHash, hash, messages.isEmpty() ? "no messages" : String.join("\n", messages));
+                miner.getUsername(), miner.getUsername(), id, timestamp, magicNumber, previousHash, hash, messages.isEmpty() ? "no transactions" :
+                        String.join("\n", messages.stream().map(Message::getText).collect(Collectors.toList())));
     }
 
 }
 
-class Miner implements Runnable {
-    private static long numInstances = 0;
+class User implements Runnable {
+    private static long instanceCount = 0;
     private long id;
+    private String username;
+    private volatile long coins = 100L;
     private Blockchain blockchain;
+    private PublicKey publicKey;
+    private PrivateKey privateKey;
 
-    public Miner(Blockchain blockchain) {
-        id = ++numInstances;
+    public User(String username, Blockchain blockchain) {
+        id = ++instanceCount;
+        this.username = username;
         this.blockchain = blockchain;
+        try {
+            KeyPairGenerator keyGen = KeyPairGenerator.getInstance("RSA");
+            SecureRandom random = SecureRandom.getInstance("SHA1PRNG", "SUN");
+            keyGen.initialize(1024, random);
+            KeyPair keyPair = keyGen.generateKeyPair();
+            privateKey = keyPair.getPrivate();
+            publicKey = keyPair.getPublic();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void sendMessage(String text) {
+        try {
+            blockchain.submitMessage(new Message(this, text));
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void sendCoins(User user, long amount) {
+        if (coins >= amount) {
+            coins -= amount;
+            user.receiveCoins(amount);
+            sendMessage(username + " sent " + amount + " VC to " + user.getUsername());
+        }
+    }
+
+    public void receiveCoins(long coins) {
+        this.coins += coins;
+    }
+
+    public PublicKey getPublicKey() {
+        return publicKey;
+    }
+
+    public PrivateKey getPrivateKey() {
+        return privateKey;
+    }
+
+    public String getUsername() {
+        return username;
+    }
+
+    public long getId() {
+        return id;
     }
 
     @Override
     public void run() {
-        while (blockchain.getBlockchainSize() < 5) {
+        while (blockchain.getBlockchainSize() < 6) {
             if (blockchain.getBlockchainSize() == 0) {
-                blockchain.addBlock(new Block(id, blockchain.getNumZeros()));
+                blockchain.addBlock(new Block(this, blockchain.getNumZeros()));
             } else {
                 blockchain.addBlock(new Block(blockchain.getCurrentId() + 1,
-                    blockchain.getLastHash(), id, blockchain.getNumZeros(), blockchain.getMessagesToAdd()));
+                        blockchain.getLastHash(), this, blockchain.getNumZeros(), blockchain.getMessagesToAdd()));
             }
         }
     }
 }
 
 class Message {
+    private static long instanceCount = 0;
+    private long id;
+    private User user;
+    private String text;
+    private byte[] signature;
 
+    public Message(User user, String text) throws NoSuchAlgorithmException, InvalidKeyException, SignatureException {
+        id = ++instanceCount;
+        this.user = user;
+        this.text = text;
+        signature = sign(user);
+    }
+
+    public byte[] sign(User user) throws NoSuchAlgorithmException, InvalidKeyException, SignatureException {
+        Signature rsa = Signature.getInstance("SHA1withRSA");
+        rsa.initSign(user.getPrivateKey());
+        rsa.update((text + "\nId: " + id).getBytes());
+        return rsa.sign();
+    }
+
+    public boolean verifySignature(User user){
+        try {
+            Signature sig = Signature.getInstance("SHA1withRSA");
+            sig.initVerify(user.getPublicKey());
+            sig.update((text + "\nId: " + id).getBytes());
+            return sig.verify(signature);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return false;
+    }
+
+    public User getUser() {
+        return user;
+    }
+
+    public String getText() {
+        return text;
+    }
+
+    public long getId() {
+        return id;
+    }
 }
 
 
